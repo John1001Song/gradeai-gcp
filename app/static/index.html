@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grade AI · Instructor</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --fg:#17202b; --muted:#5a6573; --line:#d4dae2; --accent:#1f62c7; --warn:#c2410c; --ok:#0e8a5c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:1100px; margin:0 auto; padding:24px 16px 64px; display:grid; gap:20px; }
+  h1 { margin:0; font-size:26px; } h2 { margin:0 0 12px; font-size:18px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+  label { display:grid; gap:4px; font-size:13px; color:var(--muted); }
+  input, select, textarea { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+  button { font:inherit; padding:8px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; cursor:pointer; }
+  button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; border:1px solid currentColor; }
+  .review { color:var(--warn); } .spot_check { color:var(--accent); } .auto_approve, .approved { color:var(--ok); }
+  .item { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; padding:14px 0; border-top:1px solid var(--line); }
+  .item img { width:100%; border:1px solid var(--line); border-radius:6px; }
+  pre { white-space:pre-wrap; background:var(--bg); padding:8px 10px; border-radius:6px; margin:6px 0; }
+  .muted { color:var(--muted); font-size:13px; } #msg { min-height:1.5em; }
+  @media (max-width:700px){ .item { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Grade AI</h1><p class="muted">Upload an exam config, upload scans, and review what the agents flagged. You have the final say on every grade.</p></header>
+
+  <section>
+    <h2>1. Exam config</h2>
+    <form id="examForm" class="row">
+      <label>Exam id <input id="examId" name="exam_id" value="phys101-mt1" required></label>
+      <label>Config (.md) <input id="examFile" name="config" type="file" accept=".md" required></label>
+      <button>Load exam</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>2. Student scans</h2>
+    <form id="subForm" class="row">
+      <label>Exam <select id="subExam" required></select></label>
+      <label>Student (roster id) <input id="subStudent" required></label>
+      <label>Pages (PNG) <input id="subPages" type="file" accept="image/png" multiple required></label>
+      <button>Upload and grade</button>
+    </form>
+    <p id="msg" class="muted"></p>
+  </section>
+
+  <section>
+    <h2>3. Review queue</h2>
+    <div id="queue" class="muted">Nothing waiting for review.</div>
+  </section>
+
+  <section>
+    <h2>4. Class results</h2>
+    <div class="row" style="margin-bottom:10px"><button class="secondary" id="csvBtn" type="button">Download grades CSV</button></div>
+    <div style="overflow-x:auto"><table id="results"><tbody><tr><td class="muted">No submissions yet.</td></tr></tbody></table></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const say = (t) => { $("msg").textContent = t; };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.headers.get("content-type")?.includes("json") ? r.json() : r.text();
+}
+
+async function loadExams() {
+  const exams = await api("/exams");
+  $("subExam").innerHTML = exams.map((e) => `<option value="${esc(e.exam_id)}">${esc(e.title)}</option>`).join("");
+  refresh();
+}
+
+$("examForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try { const e = await api("/exams", { method:"POST", body:new FormData($("examForm")) }); say(`Loaded "${e.title}" with ${e.questions.length} questions.`); loadExams(); }
+  catch (err) { say("Config not loaded: " + err.message); }
+};
+
+$("subForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const fd = new FormData();
+  fd.append("student_ref", $("subStudent").value);
+  for (const f of $("subPages").files) fd.append("pages", f);
+  try { await api(`/exams/${encodeURIComponent($("subExam").value)}/submissions`, { method:"POST", body:fd }); say("Uploaded. Grading..."); setTimeout(refresh, 800); }
+  catch (err) { say("Upload failed: " + err.message); }
+};
+
+$("csvBtn").onclick = () => { const id = $("subExam").value; if (id) window.location.href = `/exams/${encodeURIComponent(id)}/grades.csv`; };
+
+async function refresh() {
+  const exam = $("subExam").value; if (!exam) return;
+  const [subs, queue] = await Promise.all([api(`/exams/${encodeURIComponent(exam)}/submissions`), api(`/review/queue?exam_id=${encodeURIComponent(exam)}`)]);
+
+  if (subs.length) {
+    const qids = Object.keys(subs[0].results);
+    $("results").innerHTML = `<thead><tr><th>Student</th>${qids.map((q) => `<th>${esc(q)}</th>`).join("")}<th>Total</th><th>Status</th></tr></thead><tbody>` +
+      subs.map((s) => `<tr><td>${esc(s.student_ref)}</td>${qids.map((q) => { const r = s.results[q] || {}; const v = r.final_score ?? r.score;
+        return `<td>${v ?? ""} <span class="pill ${esc(r.route)}">${esc((r.route || "").replace("_", " "))}</span></td>`; }).join("")}
+        <td>${s.total} / ${s.max_total}</td><td><span class="pill ${esc(s.status)}">${esc(s.status.replace("_", " "))}</span>${s.error ? `<div class="muted">${esc(s.error)}</div>` : ""}</td></tr>`).join("") + "</tbody>";
+  }
+
+  $("queue").innerHTML = queue.length ? queue.map((i) => `
+    <div class="item">
+      <div><img alt="Answer area for ${esc(i.question_id)}" src="/submissions/${esc(i.submission_id)}/questions/${esc(i.question_id)}/crop"></div>
+      <div>
+        <div><strong>${esc(i.student_ref)} · ${esc(i.question_id)}</strong> <span class="pill ${esc(i.route)}">${esc(i.route.replace("_", " "))}</span></div>
+        <div class="muted">${esc(i.route_reason)}</div>
+        <pre>${esc(i.transcript)}</pre>
+        <table>${i.criteria.map((c) => `<tr><td>${esc(c.description)}</td><td>${c.awarded}/${c.max_points}</td></tr>`).join("")}</table>
+        <p class="muted">${esc(i.feedback)}</p>
+        <form class="row" data-sub="${esc(i.submission_id)}" data-q="${esc(i.question_id)}">
+          <label>Score (of ${i.max_points}) <input name="score" type="number" step="0.5" min="0" max="${i.max_points}" value="${i.score}" required></label>
+          <label>Comment <input name="comment" placeholder="Optional"></label>
+          <button>Confirm</button>
+        </form>
+      </div>
+    </div>`).join("") : "Nothing waiting for review.";
+
+  document.querySelectorAll("#queue form").forEach((f) => f.onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = { score: parseFloat(f.score.value), comment: f.comment.value };
+    try { await api(`/submissions/${f.dataset.sub}/questions/${f.dataset.q}/review`, { method:"POST", headers:{ "Content-Type":"application/json" }, body:JSON.stringify(body) }); refresh(); }
+    catch (err) { say("Review not saved: " + err.message); }
+  });
+}
+
+$("subExam").onchange = refresh;
+loadExams();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

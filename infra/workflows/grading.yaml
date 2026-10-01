@@ -1,0 +1,47 @@
+# Cloud Workflows: runs the four Grade AI agents for one submission.
+# Started by Eventarc when uploads/<exam>/<submission>/manifest.json lands in the bucket.
+# Each agent is its own HTTP step, so it retries on its own and appears in the execution history.
+
+main:
+  params: [event]
+  steps:
+    - init:
+        assign:
+          - object: ${event.data.name}
+          - bucket: ${event.data.bucket}
+          - service_url: ${sys.get_env("GRADEAI_SERVICE_URL")}
+    - only_manifests:
+        switch:
+          - condition: ${not text.match_regex(object, "^uploads/.+/manifest\\.json$")}
+            return: "ignored"
+    - read_manifest:
+        call: googleapis.storage.v1.objects.get
+        args:
+          bucket: ${bucket}
+          object: ${text.url_encode(object)}
+          alt: media
+        result: manifest
+    - run_agents:
+        for:
+          value: step
+          list: [1, 2, 3, 4]   # prep & privacy, handwriting reader, grader, confidence router
+          steps:
+            - call_agent:
+                try:
+                  call: http.post
+                  args:
+                    url: ${service_url + "/internal/agents/" + string(step)}
+                    auth:
+                      type: OIDC
+                    body:
+                      submission_id: ${manifest.submission_id}
+                    timeout: 300
+                retry:
+                  predicate: ${http.default_retry_predicate}
+                  max_retries: 3
+                  backoff:
+                    initial_delay: 2
+                    max_delay: 30
+                    multiplier: 2
+    - done:
+        return: ${manifest.submission_id}
