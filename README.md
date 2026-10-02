@@ -21,6 +21,13 @@ Orchestration: Cloud Storage → Eventarc → Cloud Workflows → Cloud Run. Det
 
 Mock mode replaces the Google services with local stand-ins, so the whole flow runs on a laptop.
 
+Requires Python 3.10 or newer. With Anaconda, use a fresh environment:
+
+```bash
+conda create -n gradeai python=3.11 -y
+conda activate gradeai
+```
+
 ```bash
 pip install -r requirements.txt
 python scripts/make_sample_exams.py   # three sample scans in examples/scans/
